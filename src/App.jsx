@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, RotateCcw, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ChatGPTService from './services/chatgptService.js';
+import ChatGPTService from "./services/chatgptService";
+const svc = new ChatGPTService();
+
 
 const App = () => {
   const [messages, setMessages] = useState([]);
@@ -14,6 +17,12 @@ const App = () => {
   const [apiKey, setApiKey] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [isApiConfigured, setIsApiConfigured] = useState(false);
+
+// Teacher video
+const [videoUrl, setVideoUrl] = useState(localStorage.getItem('teacher_video_url') || '');
+const [showVideo, setShowVideo] = useState(localStorage.getItem('teacher_video_show') === 'true');
+const [isVideoMuted, setIsVideoMuted] = useState(true);
+
   
   const recognitionRef = useRef(null);
   const synthesisRef = useRef(null);
@@ -296,6 +305,22 @@ const App = () => {
     console.log('Handling user message:', text);
     console.log('API configured:', isApiConfigured);
     console.log('ChatGPT service:', chatGPTService.current);
+
+const sys = topic?.system || "";  // 네가 쓰는 시스템 프롬프트가 있으면 그대로 사용
+const guidance = "Avoid repeating previous assistant sentence. Ask a new short follow-up.";
+
+let reply = await svc.complete(nextMessagesArray, { system: sys, guidance });
+// reply: { role:'assistant', content:'...', correction?:{...} }
+setMessages(m => [...m, reply]);
+
+{m.role === 'assistant' && m.correction && (
+  <div className="mt-2 max-w-[75%] rounded-xl border bg-gray-50 p-3 text-xs text-gray-800">
+    <div><span className="font-semibold">Corrected:</span> {m.correction.corrected}</div>
+    {m.correction.why && <div className="mt-1"><span className="font-semibold">Why:</span> {m.correction.why}</div>}
+    {m.correction.upgrade && <div className="mt-1"><span className="font-semibold">Upgrade:</span> {m.correction.upgrade}</div>}
+  </div>
+)}
+
     
     setIsProcessing(true);
     
@@ -468,6 +493,9 @@ const App = () => {
     e.preventDefault();
     if (apiKey.trim()) {
       localStorage.setItem('openai_api_key', apiKey);
+localStorage.setItem('teacher_video_url', videoUrl || '');
+localStorage.setItem('teacher_video_show', String(showVideo));
+
       chatGPTService.current = new ChatGPTService();
       setIsApiConfigured(true);
       setShowSettings(false);
@@ -497,24 +525,40 @@ const App = () => {
         </button>
       </header>
 
-      <main className="main-content">
-        <div className="video-call-section">
-          <motion.div 
-            className={`nanobana-avatar ${isNanobanaSpeaking ? 'nanobana-speaking' : ''}`}
-            animate={{ 
-              scale: isNanobanaSpeaking ? 1.1 : 1,
-              rotate: isNanobanaSpeaking ? [0, 5, -5, 0] : 0
-            }}
-            transition={{ duration: 0.5 }}
-          >
-            🍌
-          </motion.div>
-          
-          <div className="nanobana-status">
-            {isNanobanaSpeaking ? "Nanobana is speaking..." : 
-             isProcessing ? "Nanobana is thinking..." : 
-             "Nanobana is listening"}
-          </div>
+      {/* Teacher video (iframe or <video>) */}
+<div className="teacher-video-wrapper">
+  {showVideo && videoUrl ? (
+    // 👉 외부 사이트(예: D-ID, HeyGen, YouTube Embed, Loom 등)에서 제공한 "임베드 URL"을 사용
+    <div className="aspect-video w-full rounded-xl overflow-hidden border bg-black">
+      <iframe
+        src={videoUrl}
+        title="Teacher Video"
+        className="w-full h-full"
+        allow="autoplay; encrypted-media; microphone; camera; fullscreen; picture-in-picture"
+        allowFullScreen
+      />
+    </div>
+  ) : (
+    // ➜ 영상이 없을 때는 기존 아바타
+    <motion.div 
+      className={`nanobana-avatar ${isNanobanaSpeaking ? 'nanobana-speaking' : ''}`}
+      animate={{ 
+        scale: isNanobanaSpeaking ? 1.1 : 1,
+        rotate: isNanobanaSpeaking ? [0, 5, -5, 0] : 0
+      }}
+      transition={{ duration: 0.5 }}
+    >
+      🍌
+    </motion.div>
+  )}
+</div>
+
+<div className="nanobana-status">
+  {isNanobanaSpeaking ? "Teacher is speaking..." : 
+   isProcessing ? "Thinking..." : 
+   "Listening"}
+</div>
+
 
           <div className="controls">
             <button 
@@ -555,6 +599,28 @@ const App = () => {
             </button>
           </div>
         </div>
+
+<div className="controls-row">
+  <button
+    className="control-button"
+    onClick={() => setShowVideo(s => {
+      localStorage.setItem('teacher_video_show', String(!s));
+      return !s;
+    })}
+  >
+    {showVideo ? 'Hide Video' : 'Show Video'}
+  </button>
+
+  <button
+    className="control-button"
+    onClick={() => setIsVideoMuted(m => !m)}
+    title={isVideoMuted ? 'Unmute video (if supported)' : 'Mute video'}
+  >
+    {isVideoMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+    {isVideoMuted ? 'Mute' : 'Unmute'}
+  </button>
+</div>
+
 
         <div className="conversation-section">
           <div className="conversation-area">
@@ -670,6 +736,32 @@ const App = () => {
                 <div className="api-status">
                   ✅ API Key configured successfully!
                 </div>
+
+<div className="form-group" style={{ marginTop: 12 }}>
+  <label htmlFor="teacherVideo">Teacher Video (embed URL):</label>
+  <input
+    type="url"
+    id="teacherVideo"
+    value={videoUrl}
+    onChange={(e) => setVideoUrl(e.target.value)}
+    placeholder="https:// ... (임베드용 URL 붙여넣기)"
+  />
+  <small>
+    * D-ID / HeyGen / YouTube(Embed) / Loom 등에서 제공하는 <b>임베드 URL</b>을 사용하세요.
+  </small>
+
+  <div style={{ marginTop: 8 }}>
+    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <input
+        type="checkbox"
+        checked={showVideo}
+        onChange={(e) => setShowVideo(e.target.checked)}
+      />
+      Show teacher video
+    </label>
+  </div>
+</div>
+
               )}
             </motion.div>
           </motion.div>

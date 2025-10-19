@@ -1,22 +1,10 @@
 // src/services/chatgptService.js
-// 클라이언트에서 OpenAI SDK를 직접 쓰지 않고, 서버의 /api/chat 프록시를 호출
 export default class ChatGPTService {
-  constructor() {}
   async complete(messages, { system = "", guidance = "" } = {}) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages,
-        system: [
-          "You are an encouraging ESL teacher.",
-          "Keep replies <= 15 words, friendly, specific to the user's last message.",
-          "If the user's English is incorrect, continue normally AND ALSO provide JSON 'correction' with {corrected, why, upgrade}.",
-          "Lead the conversation; ask short follow-ups; avoid repeating the same sentence."
-        ].join(' '),
-        guidance
-      })
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages, system, guidance })
     });
     if (!res.ok) {
       const text = await res.text().catch(()=> '');
@@ -24,15 +12,16 @@ export default class ChatGPTService {
     }
     const data = await res.json();
 
+    // Chat Completions 기본 파싱
     const fullText =
-      data?.output_text ||
       data?.choices?.[0]?.message?.content ||
       data?.message || '';
 
-    // (옵션) 본문에 correction JSON이 같이 오면 파싱
-    let replyText = fullText, correction = null;
+    // 본문 안에 correction JSON이 섞여 오면 추출
+    let replyText = fullText;
+    let correction = null;
     try {
-      const m = fullText.match(/\{[\s\S]*\}/);
+      const m = fullText.match(/\{[\s\S]*\}/); // 첫 번째 JSON 블록
       if (m) {
         const obj = JSON.parse(m[0]);
         if (obj?.correction || obj?.corrected) {
@@ -44,7 +33,7 @@ export default class ChatGPTService {
           replyText = fullText.replace(m[0], '').trim();
         }
       }
-    } catch {}
+    } catch {/* JSON 없으면 무시 */}
     return { role: 'assistant', content: replyText || fullText, correction };
   }
 }
