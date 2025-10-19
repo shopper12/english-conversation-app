@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, RotateCcw, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import ChatGPTService from './services/chatgptService.js';
-import ChatGPTService from "./services/chatgptService";
+import ChatGPTService from './services/chatgptService'; 
 const svc = new ChatGPTService();
 
 
