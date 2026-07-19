@@ -1,39 +1,35 @@
-// src/services/chatgptService.js
-export default class ChatGPTService {
-  async complete(messages, { system = "", guidance = "" } = {}) {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-4o-mini', messages, system, guidance })
+const request = async (payload) => {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error || `AI 요청 실패 (${response.status})`);
+  }
+  return data;
+};
+
+export default class InterviewCoachService {
+  startSession(profile) {
+    return request({ action: 'start', profile });
+  }
+
+  evaluateAnswer({ profile, transcript, history, telemetry, questionNumber, totalQuestions }) {
+    return request({
+      action: 'answer',
+      profile,
+      transcript,
+      history,
+      telemetry,
+      questionNumber,
+      totalQuestions,
     });
-    if (!res.ok) {
-      const text = await res.text().catch(()=> '');
-      throw new Error('Chat API error: ' + text);
-    }
-    const data = await res.json();
+  }
 
-    // Chat Completions 기본 파싱
-    const fullText =
-      data?.choices?.[0]?.message?.content ||
-      data?.message || '';
-
-    // 본문 안에 correction JSON이 섞여 오면 추출
-    let replyText = fullText;
-    let correction = null;
-    try {
-      const m = fullText.match(/\{[\s\S]*\}/); // 첫 번째 JSON 블록
-      if (m) {
-        const obj = JSON.parse(m[0]);
-        if (obj?.correction || obj?.corrected) {
-          correction = obj.correction || {
-            corrected: obj.corrected || '',
-            why: obj.why || '',
-            upgrade: obj.upgrade || ''
-          };
-          replyText = fullText.replace(m[0], '').trim();
-        }
-      }
-    } catch {/* JSON 없으면 무시 */}
-    return { role: 'assistant', content: replyText || fullText, correction };
+  finishSession({ profile, history, sessionMetrics }) {
+    return request({ action: 'finish', profile, history, sessionMetrics });
   }
 }
