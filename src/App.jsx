@@ -141,6 +141,14 @@ function App() {
     return () => window.clearInterval(timer);
   }, [phase, questionNumber]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (phase !== 'interview' || !video || !stream) return;
+    if (video.srcObject !== stream) video.srcObject = stream;
+    video.play().catch(() => {});
+  }, [phase, cameraReady]);
+
   const stopMedia = useCallback(() => {
     shouldListenRef.current = false;
     try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
