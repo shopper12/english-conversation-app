@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js",
-    "build": "node ./node_modules/vite/bin/vite.js build",
+    "build": "node ./node_modules/vite/bin/vite.js build && node ./scripts/prepare-sites-build.mjs",
     "preview": "node ./node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {
