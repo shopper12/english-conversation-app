@@ -4,11 +4,8 @@ const request = async (payload) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data?.error || `AI 요청 실패 (${response.status})`);
-  }
+  if (!response.ok) throw new Error(data?.error || `AI 요청 실패 (${response.status})`);
   return data;
 };
 
@@ -17,15 +14,10 @@ export default class InterviewCoachService {
     return request({ action: 'start', profile });
   }
 
-  evaluateAnswer({ profile, transcript, history, telemetry, questionNumber, totalQuestions }) {
+  evaluateAnswer({ profile, transcript, history, telemetry, questionNumber, totalQuestions, visionFrames, videoSample }) {
     return request({
-      action: 'answer',
-      profile,
-      transcript,
-      history,
-      telemetry,
-      questionNumber,
-      totalQuestions,
+      action: 'answer', profile, transcript, history, telemetry,
+      questionNumber, totalQuestions, visionFrames, videoSample,
     });
   }
 
