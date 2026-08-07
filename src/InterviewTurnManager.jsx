@@ -50,7 +50,6 @@ export default function InterviewTurnManager() {
 
   const settingsRef = useRef(settings);
   const currentQuestionRef = useRef('');
-  const questionSeenAtRef = useRef(0);
   const firstAnswerAtRef = useRef(0);
   const lastAnswerValueRef = useRef('');
   const lastAnswerChangedAtRef = useRef(0);
@@ -123,19 +122,34 @@ export default function InterviewTurnManager() {
     if (startMic) window.setTimeout(() => clickMicTo(true), 200);
   }, [clearMicGuard]);
 
+  const resetTurnState = useCallback(() => {
+    currentQuestionRef.current = '';
+    firstAnswerAtRef.current = 0;
+    lastAnswerValueRef.current = '';
+    lastAnswerChangedAtRef.current = 0;
+    autoSubmittedQuestionRef.current = '';
+  }, []);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       const dom = getInterviewDom();
       const interviewActive = Boolean(dom.interview);
       setIsInterview((current) => current === interviewActive ? current : interviewActive);
-      if (!interviewActive) return;
+
+      if (!interviewActive) {
+        if (currentQuestionRef.current) {
+          cancelSpeaking({ startMic: false });
+          resetTurnState();
+          setStatus('대기');
+        }
+        return;
+      }
 
       const questionText = dom.question?.textContent?.trim() || '';
       const now = performance.now();
 
       if (questionText && questionText !== currentQuestionRef.current) {
         currentQuestionRef.current = questionText;
-        questionSeenAtRef.current = now;
         firstAnswerAtRef.current = 0;
         lastAnswerValueRef.current = '';
         lastAnswerChangedAtRef.current = now;
@@ -177,16 +191,14 @@ export default function InterviewTurnManager() {
     }, 250);
 
     return () => window.clearInterval(timer);
-  }, [speakQuestion]);
+  }, [cancelSpeaking, resetTurnState, speakQuestion]);
 
   useEffect(() => () => cancelSpeaking({ startMic: false }), [cancelSpeaking]);
 
   const toggleVoice = () => {
-    setSettings((current) => {
-      const nextEnabled = !current.voiceEnabled;
-      if (!nextEnabled) cancelSpeaking();
-      return { ...current, voiceEnabled: nextEnabled };
-    });
+    const nextEnabled = !settingsRef.current.voiceEnabled;
+    if (!nextEnabled) cancelSpeaking();
+    setSettings((current) => ({ ...current, voiceEnabled: nextEnabled }));
   };
 
   if (!isInterview) return null;
