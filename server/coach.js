@@ -134,6 +134,18 @@ const outputTextFromOpenAI = (data) => {
     .map((item) => item.text).join('\n');
 };
 
+const safeProviderError = (provider, status, rawMessage = '') => {
+  if (status === 401 || status === 403) return `${provider} 인증 실패: API 키와 해당 배포 환경 권한을 확인해 주세요.`;
+  if (status === 429) return `${provider} 사용량 한도 또는 요청 제한에 도달했습니다.`;
+  if (status >= 500) return `${provider} 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.`;
+  const text = String(rawMessage || '')
+    .replace(/sk-[A-Za-z0-9_*.-]+/gi, '[REDACTED]')
+    .replace(/AIza[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/https?:\/\/\S+/g, '')
+    .trim();
+  return text ? `${provider} 요청 실패: ${text.slice(0, 240)}` : `${provider} 요청에 실패했습니다.`;
+};
+
 const callOpenAI = async ({ apiKey, model, prompt, frames }) => {
   const content = [{ type: 'input_text', text: JSON.stringify(prompt) }];
   for (const frame of frames) content.push({ type: 'input_image', image_url: frame.dataUrl });
@@ -146,7 +158,7 @@ const callOpenAI = async ({ apiKey, model, prompt, frames }) => {
     });
   } catch { throw new CoachError('OpenAI 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', 502); }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new CoachError(data?.error?.message || 'OpenAI 요청에 실패했습니다.', response.status || 502);
+  if (!response.ok) throw new CoachError(safeProviderError('OpenAI', response.status, data?.error?.message), response.status || 502);
   return parseJson(outputTextFromOpenAI(data));
 };
 
@@ -168,10 +180,64 @@ const callGemini = async ({ apiKey, model, prompt, frames, video }) => {
     });
   } catch { throw new CoachError('Gemini 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', 502); }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new CoachError(data?.error?.message || 'Gemini 요청에 실패했습니다.', response.status || 502);
+  if (!response.ok) throw new CoachError(safeProviderError('Gemini', response.status, data?.error?.message), response.status || 502);
   const text = data?.candidates?.[0]?.content?.parts?.map((part) => part?.text || '').join('\n');
   return parseJson(text);
 };
+
+const probeGemini = async (apiKey, model) => {
+  if (!apiKey) return { configured: false, ok: false, status: 'not_configured' };
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`, {
+      headers: { 'x-goog-api-key': apiKey },
+    });
+    const data = await response.json().catch(() => ({}));
+    return response.ok
+      ? { configured: true, ok: true, status: response.status }
+      : { configured: true, ok: false, status: response.status, error: safeProviderError('Gemini', response.status, data?.error?.message) };
+  } catch {
+    return { configured: true, ok: false, status: 'network_error', error: 'Gemini 진단 서버에 연결하지 못했습니다.' };
+  }
+};
+
+const probeOpenAI = async (apiKey, model) => {
+  if (!apiKey) return { configured: false, ok: false, status: 'not_configured' };
+  try {
+    const response = await fetch(`https://api.openai.com/v1/models/${encodeURIComponent(model)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    return response.ok
+      ? { configured: true, ok: true, status: response.status }
+      : { configured: true, ok: false, status: response.status, error: safeProviderError('OpenAI', response.status, data?.error?.message) };
+  } catch {
+    return { configured: true, ok: false, status: 'network_error', error: 'OpenAI 진단 서버에 연결하지 못했습니다.' };
+  }
+};
+
+export async function getCoachDiagnostics(options = {}, { probe = false } = {}) {
+  const preference = String(options.provider || 'auto').toLowerCase();
+  const geminiApiKey = options.geminiApiKey;
+  const openaiApiKey = options.openaiApiKey || options.apiKey;
+  const geminiModel = options.geminiModel || 'gemini-2.5-flash-lite';
+  const openaiModel = options.openaiModel || options.model || 'gpt-4o-mini';
+
+  const diagnostics = {
+    ok: true,
+    preference,
+    configured: { gemini: Boolean(geminiApiKey), openai: Boolean(openaiApiKey) },
+    models: { gemini: geminiModel, openai: openaiModel },
+    selection: preference === 'openai' ? 'openai' : geminiApiKey ? 'gemini' : openaiApiKey ? 'openai' : 'none',
+  };
+
+  if (!probe) return diagnostics;
+
+  const [gemini, openai] = await Promise.all([
+    probeGemini(geminiApiKey, geminiModel),
+    probeOpenAI(openaiApiKey, openaiModel),
+  ]);
+  return { ...diagnostics, probes: { gemini, openai } };
+}
 
 export async function createCoachReply(body = {}, options = {}) {
   const action = ['start', 'answer', 'finish'].includes(body.action) ? body.action : 'answer';
@@ -201,11 +267,18 @@ export async function createCoachReply(body = {}, options = {}) {
     model = options.geminiModel || 'gemini-2.5-flash-lite';
     try {
       result = await callGemini({ apiKey: geminiApiKey, model, prompt, frames, video });
-    } catch (error) {
-      if (!openaiApiKey || preference === 'gemini') throw error;
+    } catch (geminiError) {
+      if (!openaiApiKey || preference === 'gemini') throw geminiError;
       provider = 'openai';
       model = options.openaiModel || options.model || 'gpt-4o-mini';
-      result = await callOpenAI({ apiKey: openaiApiKey, model, prompt, frames });
+      try {
+        result = await callOpenAI({ apiKey: openaiApiKey, model, prompt, frames });
+      } catch (openaiError) {
+        throw new CoachError(
+          `Gemini 우선 호출 실패 (${geminiError.message}) / OpenAI 대체 호출도 실패 (${openaiError.message})`,
+          openaiError.status || geminiError.status || 502,
+        );
+      }
     }
   } else if (openaiApiKey) {
     provider = 'openai';
