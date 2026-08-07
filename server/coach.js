@@ -4,6 +4,19 @@ const MAX_FRAMES = 4;
 const MAX_FRAME_CHARS = 450000;
 const MAX_VIDEO_CHARS = 1800000;
 
+const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
+const LEGACY_GEMINI_MODELS = new Set([
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash-lite-preview-09-2025',
+  'gemini-3.1-flash-lite-preview',
+]);
+
+const resolveGeminiModel = (value) => {
+  const requested = String(value || '').trim();
+  if (!requested || LEGACY_GEMINI_MODELS.has(requested)) return DEFAULT_GEMINI_MODEL;
+  return requested;
+};
+
 export class CoachError extends Error {
   constructor(message, status = 500) {
     super(message);
@@ -233,7 +246,8 @@ export async function getCoachDiagnostics(options = {}, { probe = false } = {}) 
   const preference = String(options.provider || 'auto').toLowerCase();
   const geminiApiKey = options.geminiApiKey;
   const openaiApiKey = options.openaiApiKey || options.apiKey;
-  const geminiModel = options.geminiModel || 'gemini-2.5-flash-lite';
+  const requestedGeminiModel = String(options.geminiModel || '').trim();
+  const geminiModel = resolveGeminiModel(requestedGeminiModel);
   const openaiModel = options.openaiModel || options.model || 'gpt-4o-mini';
 
   const diagnostics = {
@@ -241,6 +255,9 @@ export async function getCoachDiagnostics(options = {}, { probe = false } = {}) 
     preference,
     configured: { gemini: Boolean(geminiApiKey), openai: Boolean(openaiApiKey) },
     models: { gemini: geminiModel, openai: openaiModel },
+    modelMigration: requestedGeminiModel && requestedGeminiModel !== geminiModel
+      ? { requested: requestedGeminiModel, resolved: geminiModel }
+      : null,
     selection: preference === 'openai' ? 'openai' : geminiApiKey ? 'gemini' : openaiApiKey ? 'openai' : 'none',
   };
 
@@ -278,7 +295,7 @@ export async function createCoachReply(body = {}, options = {}) {
 
   if (preference !== 'openai' && geminiApiKey) {
     provider = 'gemini';
-    model = options.geminiModel || 'gemini-2.5-flash-lite';
+    model = resolveGeminiModel(options.geminiModel);
     try {
       result = await callGemini({ apiKey: geminiApiKey, model, prompt, frames, video });
     } catch (geminiError) {
