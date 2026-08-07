@@ -16,17 +16,17 @@
 
 기본 우선순위는 다음과 같습니다.
 
-1. `GEMINI_API_KEY`가 있으면 `gemini-2.5-flash-lite`
+1. `GEMINI_API_KEY`가 있으면 `gemini-3.1-flash-lite`
 2. Gemini가 없거나 `AI_PROVIDER=openai`이면 `gpt-4o-mini`
 3. `AI_PROVIDER=auto`에서 Gemini 호출이 실패하고 OpenAI 키가 있으면 OpenAI로 자동 대체
 
-Gemini는 영상 입력을 직접 처리합니다. OpenAI 대체 경로에서는 현재 모델의 영상 입력 제한 때문에 추출 프레임만 사용합니다.
+기존 배포 환경에 `GEMINI_MODEL=gemini-2.5-flash-lite`가 남아 있어도 서버가 자동으로 `gemini-3.1-flash-lite`로 치환합니다. Gemini는 영상 입력을 직접 처리합니다. OpenAI 대체 경로에서는 현재 모델의 영상 입력 제한 때문에 추출 프레임만 사용합니다.
 
 ## 환경변수
 
 ```text
 GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_MODEL=gemini-3.1-flash-lite
 AI_PROVIDER=auto
 
 # 선택적 대체 경로
@@ -79,7 +79,7 @@ npm run build
 5. 질문이 실제 음성으로 재생되는지 확인합니다.
 6. 질문 음성이 끝난 직후 마이크 버튼이 자동으로 `인식 중지` 상태가 되는지 확인합니다.
 7. 20자 이상 답변하고 말을 멈춥니다. 약 4.5초 뒤 자동으로 `AI 분석 중`으로 바뀌는지 확인합니다.
-8. 피드백 아래 모델 표시가 `AI: gemini / gemini-2.5-flash-lite`인지 확인합니다.
+8. 피드백 아래 모델 표시가 `AI: gemini / gemini-3.1-flash-lite`인지 확인합니다.
 9. `AI 화상 코칭` 내용이 생성되는지 확인합니다.
 10. 3문항 완료 후 최종 리포트가 표시되는지 확인합니다.
 
