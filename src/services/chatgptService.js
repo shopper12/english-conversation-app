@@ -1,3 +1,9 @@
+import {
+  applyQuestionQueueToResponse,
+  clearQuestionQueue,
+  getOpeningQuestion,
+} from '../questionPracticeBridge.js';
+
 const request = async (payload) => {
   const response = await fetch('/api/chat', {
     method: 'POST',
@@ -11,14 +17,16 @@ const request = async (payload) => {
 
 export default class InterviewCoachService {
   startSession(profile) {
+    const selectedOpening = getOpeningQuestion();
+    if (selectedOpening) return Promise.resolve(selectedOpening);
     return request({ action: 'start', profile });
   }
 
-  evaluateAnswer({
+  async evaluateAnswer({
     profile, question, questionIntent, questionMeta, transcript, history, telemetry,
     questionNumber, totalQuestions, visionFrames, videoSample,
   }) {
-    return request({
+    const response = await request({
       action: 'answer',
       profile,
       question,
@@ -32,9 +40,14 @@ export default class InterviewCoachService {
       visionFrames,
       videoSample,
     });
+    return applyQuestionQueueToResponse(response, questionNumber);
   }
 
-  finishSession({ profile, history, sessionMetrics }) {
-    return request({ action: 'finish', profile, history, sessionMetrics });
+  async finishSession({ profile, history, sessionMetrics }) {
+    try {
+      return await request({ action: 'finish', profile, history, sessionMetrics });
+    } finally {
+      clearQuestionQueue();
+    }
   }
 }
