@@ -5,12 +5,15 @@ import App from './App.jsx'
 import InterviewTurnManager from './InterviewTurnManager.jsx'
 import HumanInterviewEvaluator from './HumanInterviewEvaluator.jsx'
 import QuestionLibrary from './QuestionLibrary.jsx'
+import { InterviewRuntimeProvider } from './InterviewRuntimeContext.jsx'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
-    <InterviewTurnManager />
-    <HumanInterviewEvaluator />
-    <QuestionLibrary />
+    <InterviewRuntimeProvider>
+      <App />
+      <InterviewTurnManager />
+      <HumanInterviewEvaluator />
+      <QuestionLibrary />
+    </InterviewRuntimeProvider>
   </React.StrictMode>,
 )
