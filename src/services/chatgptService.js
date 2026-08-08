@@ -4,8 +4,8 @@ import {
   getOpeningQuestion,
 } from '../questionPracticeBridge.js';
 
-const request = async (payload) => {
-  const response = await fetch('/api/chat', {
+const requestJson = async (path, payload) => {
+  const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -14,6 +14,8 @@ const request = async (payload) => {
   if (!response.ok) throw new Error(data?.error || `AI 요청 실패 (${response.status})`);
   return data;
 };
+
+const request = (payload) => requestJson('/api/chat', payload);
 
 export default class InterviewCoachService {
   startSession(profile) {
@@ -41,6 +43,10 @@ export default class InterviewCoachService {
       videoSample,
     });
     return applyQuestionQueueToResponse(response, questionNumber);
+  }
+
+  transcribeAudio({ audioDataUrl, language }) {
+    return requestJson('/api/transcribe', { audioDataUrl, language });
   }
 
   async finishSession({ profile, history, sessionMetrics }) {
