@@ -143,7 +143,7 @@ function PronunciationPanel({ result }) {
     return (
       <div className="pronunciation-card is-unavailable">
         <div><Volume2 size={15} /><strong>영어 발음·억양 평가</strong></div>
-        <p>{result.reason === 'not_configured' ? 'Azure Speech 키가 설정되면 영어 답변의 발음·유창성·완성도·억양을 추가 평가합니다.' : '영어 답변에서만 발음평가를 실행합니다.'}</p>
+        <p>{result.reason === 'not_configured' ? 'Azure Speech 키가 설정되면 영어 답변의 발음·유창성·완성도·억양을 추가 평가합니다.' : result.reason === 'request_failed' ? '발음평가 요청이 실패했습니다. 일반 면접 코칭은 정상적으로 계속됩니다.' : '영어 답변에서만 발음평가를 실행합니다.'}</p>
       </div>
     );
   }
@@ -183,6 +183,8 @@ export default function HumanInterviewEvaluator() {
   const audioCaptureActiveRef = useRef(false);
   const pcmChunksRef = useRef([]);
   const pcmSampleCountRef = useRef(0);
+  const liveMetricsRef = useRef(runtime.liveMetrics || {});
+  const videoElementRef = useRef(runtime.videoElement || null);
   const metricsRef = useRef({
     audioSamples: 0,
     voiceSamples: 0,
@@ -319,18 +321,25 @@ export default function HumanInterviewEvaluator() {
     return encodeWavDataUrl(converted, TARGET_SAMPLE_RATE);
   }, []);
 
-  const snapshotCurrent = useCallback(() => ({
-    question: currentQuestionRef.current,
-    transcript: currentAnswerRef.current,
-    targetRole: runtime.profile?.targetRole || '',
-    interviewType: runtime.profile?.interviewType || '',
-    language: runtime.profile?.language || (/[가-힣]/.test(currentAnswerRef.current) ? 'ko-KR' : 'en-US'),
-    telemetry: buildTelemetry(),
-    listeningFrames: [...listeningFramesRef.current],
-    answerFrames: [...answerFramesRef.current],
-    pronunciationAudio: buildPronunciationAudio(),
-    contentScore: Number(runtime.latestFeedback?.overallScore),
-  }), [buildPronunciationAudio, buildTelemetry, runtime.latestFeedback?.overallScore, runtime.profile?.interviewType, runtime.profile?.language, runtime.profile?.targetRole]);
+  const snapshotCurrent = useCallback(() => {
+    const interviewType = String(runtime.profile?.interviewType || '');
+    const configuredLanguage = String(runtime.profile?.language || '');
+    const language = /영어|english/i.test(interviewType)
+      ? 'en-US'
+      : configuredLanguage || (/[가-힣]/.test(currentAnswerRef.current) ? 'ko-KR' : 'en-US');
+    return {
+      question: currentQuestionRef.current,
+      transcript: currentAnswerRef.current,
+      targetRole: runtime.profile?.targetRole || '',
+      interviewType,
+      language,
+      telemetry: buildTelemetry(),
+      listeningFrames: [...listeningFramesRef.current],
+      answerFrames: [...answerFramesRef.current],
+      pronunciationAudio: buildPronunciationAudio(),
+      contentScore: Number(runtime.latestFeedback?.overallScore),
+    };
+  }, [buildPronunciationAudio, buildTelemetry, runtime.latestFeedback?.overallScore, runtime.profile?.interviewType, runtime.profile?.language, runtime.profile?.targetRole]);
 
   const runEvaluation = useCallback(async (snapshot) => {
     const key = `${snapshot.question}::${snapshot.transcript.slice(0, 80)}`;
@@ -381,6 +390,14 @@ export default function HumanInterviewEvaluator() {
   }, [runtime.displayAnswer]);
 
   useEffect(() => {
+    liveMetricsRef.current = runtime.liveMetrics || {};
+  }, [runtime.liveMetrics]);
+
+  useEffect(() => {
+    videoElementRef.current = runtime.videoElement || null;
+  }, [runtime.videoElement]);
+
+  useEffect(() => {
     frameTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
     frameTimeoutsRef.current = [];
     if (runtime.phase !== 'interview' || !runtime.question) return undefined;
@@ -389,7 +406,7 @@ export default function HumanInterviewEvaluator() {
     [250, 1750, 3250].forEach((delay) => {
       const timer = window.setTimeout(() => {
         if (audioCaptureActiveRef.current || listeningFramesRef.current.length >= 3) return;
-        const frame = captureVideoFrame(runtime.videoElement);
+        const frame = captureVideoFrame(videoElementRef.current);
         if (frame) listeningFramesRef.current.push(frame);
       }, delay);
       frameTimeoutsRef.current.push(timer);
@@ -398,7 +415,7 @@ export default function HumanInterviewEvaluator() {
       frameTimeoutsRef.current.forEach((timer) => window.clearTimeout(timer));
       frameTimeoutsRef.current = [];
     };
-  }, [resetTurn, runtime.phase, runtime.question, runtime.videoElement]);
+  }, [resetTurn, runtime.phase, runtime.question]);
 
   useEffect(() => {
     if (runtime.phase !== 'interview' || !runtime.isListening) {
@@ -422,9 +439,10 @@ export default function HumanInterviewEvaluator() {
         if (now - lastMetricAt >= 120) {
           sampleAudio();
           const metrics = metricsRef.current;
-          const eyeContact = Number(runtime.liveMetrics?.eyeContact);
-          const framing = Number(runtime.liveMetrics?.framing);
-          const stability = Number(runtime.liveMetrics?.stability);
+          const currentLiveMetrics = liveMetricsRef.current;
+          const eyeContact = Number(currentLiveMetrics?.eyeContact);
+          const framing = Number(currentLiveMetrics?.framing);
+          const stability = Number(currentLiveMetrics?.stability);
           if (Number.isFinite(eyeContact)) metrics.eyeContactValues.push(eyeContact);
           if (Number.isFinite(framing)) metrics.framingValues.push(framing);
           if (Number.isFinite(stability)) metrics.stabilityValues.push(stability);
@@ -440,7 +458,7 @@ export default function HumanInterviewEvaluator() {
           lastMetricAt = now;
         }
         if (answerFramesRef.current.length < MAX_FRAMES && now >= nextFrameAt) {
-          const frame = captureVideoFrame(runtime.videoElement);
+          const frame = captureVideoFrame(videoElementRef.current);
           if (frame) answerFramesRef.current.push(frame);
           nextFrameAt = now + 1800;
         }
@@ -454,7 +472,7 @@ export default function HumanInterviewEvaluator() {
       audioCaptureActiveRef.current = false;
       if (raf) window.cancelAnimationFrame(raf);
     };
-  }, [buildTelemetry, ensureAudio, runtime.isListening, runtime.liveMetrics, runtime.mediaStream, runtime.phase, runtime.videoElement, sampleAudio]);
+  }, [buildTelemetry, ensureAudio, runtime.isListening, runtime.mediaStream, runtime.phase, sampleAudio]);
 
   useEffect(() => {
     if (!runtime.latestFeedback || !runtime.question || runtime.displayAnswer.trim().length < 2) return;
