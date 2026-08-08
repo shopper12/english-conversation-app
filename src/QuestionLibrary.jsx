@@ -87,13 +87,16 @@ function QuestionLibrary() {
     const locate = () => {
       const form = document.querySelector('.phase-setup .setup-card form');
       setTarget(form || null);
-      if (form) clearQuestionQueue();
     };
     locate();
     const observer = new MutationObserver(locate);
     observer.observe(document.body, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (target) clearQuestionQueue();
+  }, [target]);
 
   const allWork = useMemo(() => dedupeQuestions([...generatedWork, ...WORK_QUESTIONS]), [generatedWork]);
   const allResume = useMemo(() => dedupeQuestions(generatedResume), [generatedResume]);
@@ -218,6 +221,11 @@ function QuestionLibrary() {
   };
 
   const startSelected = () => {
+    if (!collectContext().targetRole.trim()) {
+      setError('먼저 위의 목표 직무를 입력해 주세요.');
+      document.getElementById('targetRole')?.focus();
+      return;
+    }
     if (!selectedQuestions.length) {
       setError('연습할 질문을 하나 이상 선택해 주세요.');
       return;
@@ -228,6 +236,11 @@ function QuestionLibrary() {
   };
 
   const practiceOne = (item) => {
+    if (!collectContext().targetRole.trim()) {
+      setError('먼저 위의 목표 직무를 입력해 주세요.');
+      document.getElementById('targetRole')?.focus();
+      return;
+    }
     setSelected(new Set([item.id]));
     setQuestionQueue([item]);
     target?.requestSubmit();
