@@ -5,14 +5,16 @@ import {
   Sparkles, Target, TrendingUp, Video,
 } from 'lucide-react';
 import InterviewCoachService from './services/chatgptService.js';
+import { useInterviewRuntime } from './InterviewRuntimeContext.jsx';
 
 const coach = new InterviewCoachService();
 const SETTINGS_KEY = 'interview-pilot-settings-v3';
 const LEGACY_SETTINGS_KEY = 'interview-pilot-settings-v2';
 const SESSION_HISTORY_KEY = 'interview-pilot-session-history-v1';
-const MEDIAPIPE_MODULE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm';
-const MEDIAPIPE_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
-const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
+const MEDIAPIPE_VERSION = '0.10.35';
+const MEDIAPIPE_MODULE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/+esm`;
+const MEDIAPIPE_WASM = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
+const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
 const DEFAULT_PROFILE = {
   targetRole: '',
@@ -179,6 +181,7 @@ function RecentSessions({ sessions }) {
 }
 
 function App() {
+  const { publishRuntime } = useInterviewRuntime();
   const initialSettings = useMemo(loadSettings, []);
   const [phase, setPhase] = useState('setup');
   const [profile, setProfile] = useState(initialSettings.profile);
@@ -197,6 +200,8 @@ function App() {
   const [modelMeta, setModelMeta] = useState(null);
   const [isBusy, setIsBusy] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [sttFallbackBusy, setSttFallbackBusy] = useState(false);
+  const [sttMode, setSttMode] = useState('browser');
   const [cameraReady, setCameraReady] = useState(false);
   const [permissionError, setPermissionError] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -209,6 +214,10 @@ function App() {
   const streamRef = useRef(null);
   const recognitionRef = useRef(null);
   const shouldListenRef = useRef(false);
+  const fallbackSttRecorderRef = useRef(null);
+  const fallbackSttChunksRef = useRef([]);
+  const fallbackSttTrackRef = useRef(null);
+  const fallbackSttTimerRef = useRef(null);
   const audioContextRef = useRef(null);
   const audioTimerRef = useRef(null);
   const faceLandmarkerRef = useRef(null);
@@ -279,6 +288,15 @@ function App() {
     video.play().catch(() => {});
   }, [phase, cameraReady]);
 
+  const stopFallbackStt = useCallback(() => {
+    if (fallbackSttTimerRef.current) window.clearTimeout(fallbackSttTimerRef.current);
+    fallbackSttTimerRef.current = null;
+    const recorder = fallbackSttRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      try { recorder.stop(); } catch { /* ignored */ }
+    }
+  }, []);
+
   const stopVideoSample = useCallback(async () => {
     const recorder = videoRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -293,6 +311,7 @@ function App() {
 
   const stopMedia = useCallback(() => {
     shouldListenRef.current = false;
+    stopFallbackStt();
     try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
     recognitionRef.current = null;
     setIsListening(false);
@@ -304,6 +323,8 @@ function App() {
     if (recorder && recorder.state !== 'inactive') {
       try { recorder.stop(); } catch { /* ignored */ }
     }
+    fallbackSttTrackRef.current?.stop?.();
+    fallbackSttTrackRef.current = null;
     videoTracksRef.current.forEach((track) => track.stop());
     videoTracksRef.current = [];
     audioContextRef.current?.close().catch(() => {});
@@ -314,7 +335,7 @@ function App() {
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setCameraReady(false);
-  }, []);
+  }, [stopFallbackStt]);
 
   useEffect(() => () => stopMedia(), [stopMedia]);
 
@@ -350,8 +371,73 @@ function App() {
       }
     };
     recognitionRef.current = recognition;
+    setSttMode('browser');
     return true;
   }, [profile.language]);
+
+  const startFallbackStt = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream || !window.MediaRecorder) {
+      setPermissionError('이 브라우저는 음성 인식과 MediaRecorder를 모두 지원하지 않습니다. 직접 입력해 주세요.');
+      return false;
+    }
+    const sourceTrack = stream.getAudioTracks()[0];
+    if (!sourceTrack) {
+      setPermissionError('마이크 오디오 트랙을 찾지 못했습니다.');
+      return false;
+    }
+    const track = sourceTrack.clone();
+    fallbackSttTrackRef.current = track;
+    const audioStream = new MediaStream([track]);
+    const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
+      .find((type) => MediaRecorder.isTypeSupported(type)) || '';
+    fallbackSttChunksRef.current = [];
+    try {
+      const recorder = new MediaRecorder(audioStream, {
+        ...(mimeType ? { mimeType } : {}),
+        audioBitsPerSecond: 32000,
+      });
+      fallbackSttRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) fallbackSttChunksRef.current.push(event.data);
+      };
+      recorder.onstop = async () => {
+        fallbackSttRecorderRef.current = null;
+        if (fallbackSttTimerRef.current) window.clearTimeout(fallbackSttTimerRef.current);
+        fallbackSttTimerRef.current = null;
+        track.stop();
+        if (fallbackSttTrackRef.current === track) fallbackSttTrackRef.current = null;
+        const blob = new Blob(fallbackSttChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        fallbackSttChunksRef.current = [];
+        if (!blob.size) return;
+        if (blob.size > 2_500_000) {
+          setPermissionError('녹음이 너무 깁니다. 2분 이내로 답변해 주세요.');
+          return;
+        }
+        setSttFallbackBusy(true);
+        try {
+          const audioDataUrl = await blobToDataUrl(blob);
+          const result = await coach.transcribeAudio({ audioDataUrl, language: profile.language });
+          setAnswer((current) => `${current} ${result.transcript || ''}`.replace(/\s+/g, ' ').trim());
+          setPermissionError(result.confidenceNote ? `AI 음성 전사: ${result.confidenceNote}` : 'AI 음성 전사가 완료되었습니다.');
+        } catch (error) {
+          setPermissionError(`AI 음성 전사 실패: ${error.message}`);
+        } finally {
+          setSttFallbackBusy(false);
+        }
+      };
+      recorder.start(1000);
+      fallbackSttTimerRef.current = window.setTimeout(() => stopFallbackStt(), 120000);
+      setSttMode('server');
+      setPermissionError('브라우저 STT 미지원: 녹음 후 Gemini 서버 전사 모드로 진행합니다. 답변 후 마이크를 다시 눌러 전사를 완료하세요.');
+      return true;
+    } catch (error) {
+      track.stop();
+      fallbackSttTrackRef.current = null;
+      setPermissionError(`대체 음성 녹음을 시작하지 못했습니다: ${error.message}`);
+      return false;
+    }
+  }, [profile.language, stopFallbackStt]);
 
   const initializeAudioMeter = useCallback((stream) => {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -393,7 +479,7 @@ function App() {
         minFacePresenceConfidence: 0.55,
         minTrackingConfidence: 0.5,
       });
-      setLiveMetrics((current) => ({ ...current, visionMode: '기기 내 실시간 분석 + AI 답변 표본' }));
+      setLiveMetrics((current) => ({ ...current, visionMode: `MediaPipe ${MEDIAPIPE_VERSION} · 기기 내 478점 분석 + AI 답변 표본` }));
       visionTimerRef.current = window.setInterval(() => {
         const video = videoRef.current;
         const landmarker = faceLandmarkerRef.current;
@@ -422,8 +508,9 @@ function App() {
         const centerOffset = Math.hypot(center.x - 0.5, center.y - 0.43);
         const framingScore = clamp(100 - Math.abs(width - 0.34) * 260 - Math.abs(height - 0.48) * 180 - centerOffset * 160);
         const nose = landmarks[1] || center;
-        const leftEye = landmarks[468] || landmarks[33];
-        const rightEye = landmarks[473] || landmarks[263];
+        const hasIrisLandmarks = landmarks.length >= 478;
+        const leftEye = hasIrisLandmarks ? landmarks[468] : landmarks[33];
+        const rightEye = hasIrisLandmarks ? landmarks[473] : landmarks[263];
         const eyeMid = leftEye && rightEye
           ? { x: (leftEye.x + rightEye.x) / 2, y: (leftEye.y + rightEye.y) / 2 }
           : center;
@@ -534,35 +621,44 @@ function App() {
     }
   }, [initializeAudioMeter, initializeSpeechRecognition, initializeVision, stopMedia]);
 
+  const beginAnswerCapture = useCallback(() => {
+    if (answerCaptureStartedRef.current) return;
+    answerCaptureStartedRef.current = true;
+    questionStartedAtRef.current = Date.now();
+    setElapsedSeconds(0);
+    resetMetricAccumulator();
+    visionFramesRef.current = [];
+    captureFrame();
+    if (frameTimerRef.current) window.clearInterval(frameTimerRef.current);
+    frameTimerRef.current = window.setInterval(captureFrame, 3000);
+    window.setTimeout(startVideoSample, 350);
+  }, [captureFrame, resetMetricAccumulator, startVideoSample]);
+
   const startListening = useCallback(() => {
-    if (!recognitionRef.current && !initializeSpeechRecognition()) {
-      setPermissionError('실시간 음성 인식은 Chrome 또는 Edge에서 사용해 주세요. 직접 입력은 가능합니다.');
+    beginAnswerCapture();
+    shouldListenRef.current = true;
+    setIsListening(true);
+
+    const browserSttReady = Boolean(recognitionRef.current) || initializeSpeechRecognition();
+    if (browserSttReady) {
+      setSttMode('browser');
+      try { recognitionRef.current.start(); } catch { /* already active */ }
       return;
     }
 
-    if (!answerCaptureStartedRef.current) {
-      answerCaptureStartedRef.current = true;
-      questionStartedAtRef.current = Date.now();
-      setElapsedSeconds(0);
-      resetMetricAccumulator();
-      visionFramesRef.current = [];
-      captureFrame();
-      if (frameTimerRef.current) window.clearInterval(frameTimerRef.current);
-      frameTimerRef.current = window.setInterval(captureFrame, 3000);
-      window.setTimeout(startVideoSample, 350);
+    if (!startFallbackStt()) {
+      shouldListenRef.current = false;
+      setIsListening(false);
     }
-
-    shouldListenRef.current = true;
-    setIsListening(true);
-    try { recognitionRef.current.start(); } catch { /* already active */ }
-  }, [captureFrame, initializeSpeechRecognition, resetMetricAccumulator, startVideoSample]);
+  }, [beginAnswerCapture, initializeSpeechRecognition, startFallbackStt]);
 
   const stopListening = useCallback(() => {
     shouldListenRef.current = false;
     try { recognitionRef.current?.stop(); } catch { /* ignored */ }
+    stopFallbackStt();
     setInterimAnswer('');
     setIsListening(false);
-  }, []);
+  }, [stopFallbackStt]);
 
   const beginQuestion = useCallback((nextQuestion, intent = '', meta = {}) => {
     setQuestion(nextQuestion);
@@ -710,7 +806,7 @@ function App() {
 
   const submitAnswer = async () => {
     const cleanAnswer = `${answer} ${interimAnswer}`.replace(/\s+/g, ' ').trim();
-    if (cleanAnswer.length < 2 || isBusy) return;
+    if (cleanAnswer.length < 2 || isBusy || sttFallbackBusy) return;
 
     stopListening();
     setIsBusy(true);
@@ -804,6 +900,7 @@ function App() {
     setPermissionError('');
     setElapsedSeconds(0);
     setPreviousScore(null);
+    setSttMode('browser');
     resetMetricAccumulator();
   };
 
@@ -827,8 +924,8 @@ function App() {
     jobFit: reportScorecard.jobFit ?? reportScorecard.confidence,
   };
   const liveStatus = useMemo(
-    () => !cameraReady ? '카메라 대기' : isListening ? '답변 인식 중' : isBusy ? 'AI 분석 중' : pendingNext ? '코칭 확인 중' : '면접 진행',
-    [cameraReady, isBusy, isListening, pendingNext],
+    () => sttFallbackBusy ? 'AI 음성 전사 중' : !cameraReady ? '카메라 대기' : isListening ? (sttMode === 'server' ? '서버 전사용 녹음 중' : '답변 인식 중') : isBusy ? 'AI 분석 중' : pendingNext ? '코칭 확인 중' : '면접 진행',
+    [cameraReady, isBusy, isListening, pendingNext, sttFallbackBusy, sttMode],
   );
   const liveNudge = useMemo(() => {
     if (!answerCaptureStartedRef.current) return '질문을 들은 뒤 답변이 시작되면 분석이 시작됩니다.';
@@ -841,6 +938,23 @@ function App() {
     if (pace > 0 && pace < 65) return '답변 속도가 다소 느립니다. 결론 문장을 먼저 말해보세요.';
     return '현재 전달 상태가 안정적입니다. 답변의 행동·결과 근거에 집중하세요.';
   }, [displayAnswer, elapsedSeconds, liveMetrics]);
+
+  useEffect(() => {
+    publishRuntime({
+      phase,
+      profile,
+      question,
+      displayAnswer,
+      isListening,
+      isBusy: isBusy || sttFallbackBusy,
+      latestFeedback,
+      liveMetrics,
+      cameraReady,
+      mediaStream: streamRef.current,
+      videoElement: videoRef.current,
+      questionNumber,
+    });
+  }, [cameraReady, displayAnswer, isBusy, isListening, latestFeedback, liveMetrics, phase, profile, publishRuntime, question, questionNumber, sttFallbackBusy]);
 
   const communicationMetrics = report?.communication || {};
   const scoreDelta = previousScore == null ? null : Math.round((Number(report?.overallScore) || 0) - previousScore);
@@ -968,7 +1082,7 @@ function App() {
                   {isBusy ? <Loader2 className="spin" size={19} /> : <Play size={19} />} 면접 시작
                 </button>
               </div>
-              <p className="browser-note">Chrome 또는 Edge 권장 · 시작 시 카메라와 마이크 권한을 허용하세요.</p>
+              <p className="browser-note">Chrome/Edge는 브라우저 STT · Safari/Firefox는 녹음 후 Gemini 전사 fallback · 시작 시 카메라와 마이크 권한을 허용하세요.</p>
             </form>
           </section>
         </main>
@@ -1047,20 +1161,20 @@ function App() {
 
             <div className="answer-box">
               <div className="answer-box__header">
-                <span>답변 전사</span>
+                <span>답변 전사 {sttMode === 'server' && <small>· Gemini fallback</small>}</span>
                 <span>{wordCount(displayAnswer)} 어절 · {elapsedSeconds > 8 ? Math.round((wordCount(displayAnswer) / elapsedSeconds) * 60) : 0}/분</span>
               </div>
               <textarea
                 value={displayAnswer}
                 onChange={(event) => { setAnswer(event.target.value); setInterimAnswer(''); }}
-                placeholder="질문 음성이 끝나면 마이크가 자동으로 켜집니다. 직접 입력도 가능합니다."
+                placeholder={sttMode === 'server' ? '답변 후 마이크를 다시 눌러 서버 전사를 완료하세요. 직접 입력도 가능합니다.' : '질문 음성이 끝나면 마이크가 자동으로 켜집니다. 직접 입력도 가능합니다.'}
               />
               <div className="answer-actions">
-                <button className={`mic-button ${isListening ? 'is-listening' : ''}`} type="button" onClick={isListening ? stopListening : startListening}>
-                  {isListening ? <MicOff size={18} /> : <Mic size={18} />} {isListening ? '인식 중지' : '음성 인식'}
+                <button className={`mic-button ${isListening ? 'is-listening' : ''}`} type="button" onClick={isListening ? stopListening : startListening} disabled={sttFallbackBusy}>
+                  {sttFallbackBusy ? <Loader2 className="spin" size={18} /> : isListening ? <MicOff size={18} /> : <Mic size={18} />} {sttFallbackBusy ? 'AI 전사 중' : isListening ? '인식 중지' : '음성 인식'}
                 </button>
-                <button className="submit-button" type="button" onClick={submitAnswer} disabled={isBusy || displayAnswer.trim().length < 2 || Boolean(pendingNext)}>
-                  {isBusy ? <Loader2 className="spin" size={18} /> : <ChevronRight size={18} />} 답변 제출
+                <button className="submit-button" type="button" onClick={submitAnswer} disabled={isBusy || sttFallbackBusy || displayAnswer.trim().length < 2 || Boolean(pendingNext)}>
+                  {isBusy || sttFallbackBusy ? <Loader2 className="spin" size={18} /> : <ChevronRight size={18} />} 답변 제출
                 </button>
               </div>
             </div>
