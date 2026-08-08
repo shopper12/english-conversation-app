@@ -14,10 +14,23 @@ export default class InterviewCoachService {
     return request({ action: 'start', profile });
   }
 
-  evaluateAnswer({ profile, transcript, history, telemetry, questionNumber, totalQuestions, visionFrames, videoSample }) {
+  evaluateAnswer({
+    profile, question, questionIntent, questionMeta, transcript, history, telemetry,
+    questionNumber, totalQuestions, visionFrames, videoSample,
+  }) {
     return request({
-      action: 'answer', profile, transcript, history, telemetry,
-      questionNumber, totalQuestions, visionFrames, videoSample,
+      action: 'answer',
+      profile,
+      question,
+      questionIntent,
+      questionMeta,
+      transcript,
+      history,
+      telemetry,
+      questionNumber,
+      totalQuestions,
+      visionFrames,
+      videoSample,
     });
   }
 
