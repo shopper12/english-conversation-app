@@ -1,4 +1,5 @@
 import { CoachError, createCoachReply, getCoachDiagnostics } from './coach.js';
+import { HumanInterviewError, createHumanInterviewAssessment } from './humanInterview.js';
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -16,6 +17,23 @@ const getProviderOptions = (env) => ({
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (url.pathname === '/api/human-interview') {
+      if (request.method !== 'POST') return json({ error: 'POST 요청만 허용됩니다.' }, 405);
+      try {
+        const body = await request.json();
+        return json(await createHumanInterviewAssessment(body, {
+          geminiApiKey: env.GEMINI_API_KEY || env.GOOGLE_API_KEY,
+          geminiModel: env.GEMINI_MODEL,
+        }));
+      } catch (error) {
+        return json(
+          { error: error?.message || '사람면접 평가 처리 중 오류가 발생했습니다.' },
+          error instanceof HumanInterviewError ? error.status : 400,
+        );
+      }
+    }
+
     if (url.pathname !== '/api/chat') return env.ASSETS.fetch(request);
 
     if (request.method === 'GET') {
